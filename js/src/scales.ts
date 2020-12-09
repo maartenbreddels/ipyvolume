@@ -16,12 +16,17 @@ const scaleTypeMap = {
 export
 function patchMaterial(material: any) {
     material.onBeforeCompile = (shader) => {
-        shader.vertexShader = // this is the fragment program string in the template format
-        shader.vertexShader.replace( // we have to transform the string
-            "#include <scales>", // we will swap out this chunk
-            shader_scales,
-        );
+        patchShader(shader);
     };
+}
+
+export
+function patchShader(shader: any) {
+    shader.vertexShader = // this is the fragment program string in the template format
+    shader.vertexShader.replace( // we have to transform the string
+        "#include <scales>", // we will swap out this chunk
+        shader_scales,
+    );
 }
 
 export

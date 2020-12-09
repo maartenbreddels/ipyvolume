@@ -75,3 +75,15 @@ function copy_image_to_clipboard(data) {
     document.execCommand("Copy");
     document.body.removeChild(div);
 }
+
+export
+function materialToLightingModel(material) {
+    if (material.type === "MeshPhysicalMaterial") {
+        return "PHYSICAL";
+    } else if (material.type === "MeshLambertMaterial") {
+        return "LAMBERT";
+    } else if (material.type === "MeshPhongMaterial") {
+        return "PHONG";
+    }
+    return "DEFAULT";
+}

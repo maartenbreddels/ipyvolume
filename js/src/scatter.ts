@@ -1,12 +1,16 @@
 import * as widgets from "@jupyter-widgets/base";
 import { isArray, isEqual, isNumber } from "lodash";
 import * as THREE from "three";
-import { createColormap, patchMaterial, scaleTypeMap } from "./scales";
+import { MeshDepthMaterialCustom, MeshDistanceMaterialCustom } from "./materials";
+import { createColormap, patchShader, scaleTypeMap } from "./scales";
 import * as serialize from "./serialize.js";
-import { semver_range } from "./utils";
+import { materialToLightingModel, semver_range } from "./utils";
 import * as values from "./values.js";
 // tslint:disable-next-line: no-var-requires
 const cat_data = require("../data/cat.json");
+
+const vertexShader = (require("raw-loader!../glsl/scatter-vertex.glsl") as any).default;
+const fragmentShader = (require("raw-loader!../glsl/scatter-fragment.glsl") as any).default;
 
 export
 class ScatterView extends widgets.WidgetView {
@@ -23,13 +27,17 @@ class ScatterView extends widgets.WidgetView {
         triangle_2d: THREE.CircleGeometry; };
     material: any;
     material_rgb: any;
+    material_depth: any;
     line_material: any;
     line_material_rgb: any;
     materials: any[];
     texture_video: HTMLVideoElement;
     line_segments: any;
     mesh: any;
+    lighting_model : any;
+
     render() {
+
         this.renderer = this.options.parent;
         this.previous_values = {};
         this.attributes_changed = {};
@@ -114,6 +122,7 @@ class ScatterView extends widgets.WidgetView {
                 texture: { type: "t", value: null },
                 texture_previous: { type: "t", value: null },
                 colormap: {type: "t", value: null},
+                ...THREE.UniformsUtils.merge([THREE.UniformsLib["common"], THREE.UniformsLib["lights"]])
             };
         const get_material = (name)  => {
             if (this.model.get(name)) {
@@ -127,17 +136,16 @@ class ScatterView extends widgets.WidgetView {
         this.line_material = get_material("line_material");
         this.line_material_rgb = get_material("line_material");
         this.materials = [this.material, this.material_rgb, this.line_material, this.line_material_rgb];
+
         this._update_materials();
         if (this.model.get("material")) {
             this.model.get("material").on("change", () => {
                 this._update_materials();
-                this.renderer.update();
             });
         }
         if (this.model.get("line_material")) {
             this.model.get("line_material").on("change", () => {
                 this._update_materials();
-                this.renderer.update();
             });
         }
         this.model.on("change:geo_matrix", () => {
@@ -158,10 +166,9 @@ class ScatterView extends widgets.WidgetView {
         this.model.on("change:geo change:connected", this.update_, this);
         this.model.on("change:color_scale", this._update_color_scale, this);
         this.model.on("change:texture", this._load_textures, this);
-        this.model.on("change:visible", this.update_visibility, this);
+        this.model.on("change:visible", this._update_materials, this);
         this.model.on("change:geo", () => {
             this._update_materials();
-            this.renderer.update();
         });
         const update_scale = (name) => {
             const scale_name = name + "_scale";
@@ -215,7 +222,9 @@ class ScatterView extends widgets.WidgetView {
             this.model.on(`change:${name}_scale`, updater, this);
         });
 
+        this.model.on("change:material change:cast_shadow change:receive_shadow", this._update_materials, this);
     }
+
     _load_textures() {
         const texture = this.model.get("texture");
         if (texture.stream) { // instanceof media.MediaStreamModel) {
@@ -241,15 +250,11 @@ class ScatterView extends widgets.WidgetView {
             );
         }
     }
-    update_visibility() {
-        this._update_materials();
-        this.renderer.update();
-    }
+
     set_scales(scales) {
         const new_scale_defines = {...this.scale_defines};
         for (const key of Object.keys(scales)) {
-            this.material.uniforms[`domain_${key}`].value = scales[key].domain;
-            this.material_rgb.uniforms[`domain_${key}`].value = scales[key].domain;
+            this.uniforms[`domain_${key}`].value = scales[key].domain;
             new_scale_defines[`SCALE_TYPE_${key}`] = scaleTypeMap[scales[key].type];
         }
         if (!isEqual(this.scale_defines, new_scale_defines) ) {
@@ -275,7 +280,6 @@ class ScatterView extends widgets.WidgetView {
         }
     }
     on_change() {
-        console.log(this.model.changedAttributes());
         for (const key of Object.keys(this.model.changedAttributes())) {
             this.previous_values[key] = this.model.previous(key);
             // attributes_changed keys will say what needs to be animated, it's values are the properties in
@@ -323,7 +327,7 @@ class ScatterView extends widgets.WidgetView {
             return value;
         }
     }
-    get_current(name, index, default_value) {
+    get_next(name, index, default_value) {
         return this._get_value(this.model.get(name), index, default_value);
     }
     get_previous(name, index, default_value) {
@@ -339,7 +343,7 @@ class ScatterView extends widgets.WidgetView {
             return value;
         }
     }
-    get_current_vec3(name, index, default_value) {
+    get_next_vec3(name, index, default_value) {
         return this._get_value_vec3(this.model.get(name), index, default_value);
     }
     get_previous_vec3(name, index, default_value) {
@@ -400,6 +404,7 @@ class ScatterView extends widgets.WidgetView {
         this.renderer.update();
     }
      _update_materials() {
+
         if (this.model.get("material")) {
             this.material.copy(this.model.get("material").obj);
         }
@@ -415,33 +420,40 @@ class ScatterView extends widgets.WidgetView {
             this.line_material_rgb.linewidth = this.line_material.linewidth = this.model.get("line_material").obj.linewidth;
         }
 
+        // TODO: lighting_model for lines could be different
+        this.lighting_model = materialToLightingModel(this.material)
         const shader_snippets = this.model.get('shader_snippets');
         const snippet_defines = {};
         for (const key of Object.keys(shader_snippets)) {
             snippet_defines["SHADER_SNIPPET_" + key.toUpperCase()] = shader_snippets[key];
         }
-
-        this.material.defines = {USE_COLORMAP: this.model.get("color_scale") !== null, ...this.scale_defines, ...snippet_defines};
+        this.material.defines = {USE_COLOR: true, USE_COLORMAP: this.model.get("color_scale") !== null, ...this.scale_defines, ...snippet_defines};
+        this.material.defines[`AS_${this.lighting_model}`] = true;
         this.material.extensions = {derivatives: true};
-        this.material_rgb.defines = {USE_RGB: true, ...this.scale_defines, ...snippet_defines};
+        this.material_rgb.defines = {AS_COORDINATE: true, USE_COLOR: true, ...this.scale_defines, ...snippet_defines};
         this.material_rgb.extensions = {derivatives: true};
-        this.line_material.defines = {AS_LINE: true, ...this.scale_defines,  ...snippet_defines};
-        this.line_material_rgb.defines = {USE_RGB: true, AS_LINE: true};
+        this.line_material.defines = {IS_LINE: true, USE_COLOR: true, ...this.scale_defines,  ...snippet_defines};
+        this.line_material.defines[`AS_${this.lighting_model}`] = true;
+        this.line_material_rgb.defines = {AS_COORDINATE: true, IS_LINE: true, USE_COLOR: true};
         // locally and the visible with this object's visible trait
         this.material.visible = this.material.visible && this.model.get("visible");
         this.material_rgb.visible = this.material.visible && this.model.get("visible");
         this.line_material.visible = this.line_material.visible && this.model.get("visible");
         this.line_material_rgb.visible = this.line_material.visible && this.model.get("visible");
+
+
+
         this.materials.forEach((material) => {
-            material.vertexShader = (require("raw-loader!../glsl/scatter-vertex.glsl") as any).default;
-            material.fragmentShader = (require("raw-loader!../glsl/scatter-fragment.glsl") as any).default;
-            material.uniforms = {...material.uniforms, ...this.uniforms};
-            material.depthWrite = true;
-            material.transparant = true;
-            material.depthTest = true;
+            material.onBeforeCompile = (shader) => {
+                shader.vertexShader = vertexShader;
+                shader.fragmentShader = fragmentShader;
+                shader.uniforms = {...shader.uniforms, ...this.uniforms};
+                patchShader(shader);
+            };
             material.needsUpdate = true;
-            patchMaterial(material);
+            material.lights = true;
         });
+
         const geo = this.model.get("geo");
         const sprite = geo.endsWith("2d");
         if (sprite) {
@@ -458,6 +470,8 @@ class ScatterView extends widgets.WidgetView {
         this.material_rgb.needsUpdate = true;
         this.line_material.needsUpdate = true;
         this.line_material_rgb.needsUpdate = true;
+
+        this.renderer.update();
     }
     create_mesh() {
         let geo = this.model.get("geo");
@@ -484,49 +498,49 @@ class ScatterView extends widgets.WidgetView {
         } else {
             vector4_names.push("color", "color_selected");
         }
-        const current  = new values.Values(scalar_names, [], this.get_current.bind(this), sequence_index, vector4_names);
+        const next  = new values.Values(scalar_names, [], this.get_next.bind(this), sequence_index, vector4_names);
         const previous = new values.Values(scalar_names, [], this.get_previous.bind(this), sequence_index_previous, vector4_names);
 
-        const length = Math.max(current.length, previous.length);
+        const length = Math.max(next.length, previous.length);
         if (length === 0) {
             console.error("no single member is an array, not supported (yet?)");
         }
 
-        current.trim(current.length); // make sure all arrays are of equal length
+        next.trim(next.length); // make sure all arrays are of equal length
         previous.trim(previous.length);
         const previous_length = previous.length;
-        const current_length = current.length;
+        const next_length = next.length;
         if (this.model.get("selected") || this.previous_values.selected) {
             // upgrade size and size_previous to an array if they were not already
-            current.ensure_array(["size", "size_selected", "color", "color_selected"]);
+            next.ensure_array(["size", "size_selected", "color", "color_selected"]);
             previous.ensure_array(["size", "size_selected", "color", "color_selected"]);
-            let selected = this.get_current("selected", sequence_index, []);
-            current.select(selected);
+            let selected = this.get_next("selected", sequence_index, []);
+            next.select(selected);
             selected = this.get_previous("selected", sequence_index_previous, []);
             previous.select(selected);
         }
         // if we have a change in length, we use size to fade in/out particles, so make sure they are arrays
-        if (current.length !== previous.length) {
-            current.ensure_array("size");
+        if (next.length !== previous.length) {
+            next.ensure_array("size");
             previous.ensure_array("size");
         }
-        if (current.length > previous.length) { // grow..
-            previous.pad(current);
+        if (next.length > previous.length) { // grow..
+            previous.pad(next);
             (previous.array.size as any).fill(0, previous_length); // this will make them smoothly fade in
-        } else if (current.length < previous.length) { // shrink..
-            current.pad(previous);
-            (current.array.size as any).fill(0, current_length); // this will make them smoothly fade out
+        } else if (next.length < previous.length) { // shrink..
+            next.pad(previous);
+            (next.array.size as any).fill(0, next_length); // this will make them smoothly fade out
         }
         // we are only guaranteed to have 16 attributes for the shader, so better merge some into single vectors
-        current.merge_to_vec3(["vx", "vy", "vz"], "v");
+        next.merge_to_vec3(["vx", "vy", "vz"], "v");
         previous.merge_to_vec3(["vx", "vy", "vz"], "v");
 
         // we don't want to send these to the shader, these are handled at the js side
-        current.pop(["size_selected", "color_selected"]);
+        next.pop(["size_selected", "color_selected"]);
         previous.pop(["size_selected", "color_selected"]);
 
-        // add atrributes to the geometry, this makes the available to the shader
-        current.add_attributes(instanced_geo);
+        // add attributes to the geometry, this makes them available to the shader
+        next.add_attributes(instanced_geo, "_next");
         previous.add_attributes(instanced_geo, "_previous");
         if (sprite) {
             const texture = this.model.get("texture");
@@ -536,30 +550,61 @@ class ScatterView extends widgets.WidgetView {
                 this.material.uniforms.texture_previous.value = this.textures[sequence_index_previous % this.textures.length];
             }
         }
+        instanced_geo.computeVertexNormals();
         this.mesh = new THREE.Mesh(instanced_geo, this.material);
+        this.mesh.castShadow = this.model.get("cast_shadow");
+        this.mesh.receiveShadow = this.model.get("receive_shadow");
+        // We use the approach used in https://codepen.io/Fyrestar/pen/JqqGZQ
+        // see also https://discourse.threejs.org/t/shadow-for-instances/7947/7
+        // or https://jsfiddle.net/mikatalk/4fn1oqz9/
+
+        this.mesh.customDepthMaterial = new MeshDepthMaterialCustom(() => {
+            const defines = {...this.material.defines};
+            delete defines[`AS_${this.lighting_model}`];
+            const as_sprite = this.model.get("geo").endsWith("2d");
+            if (as_sprite) {
+                defines.AS_SPRITE = true;
+            }
+            return {AS_DEPTH: true, ...defines};
+        }, this.uniforms, vertexShader, fragmentShader, {
+            depthPacking: THREE.RGBADepthPacking,
+            alphaTest: 0.5,
+        });
+        this.mesh.customDistanceMaterial = new MeshDistanceMaterialCustom(() => {
+            const defines = {...this.material.defines};
+            delete defines[`AS_${this.lighting_model}`];
+            const as_sprite = this.model.get("geo").endsWith("2d");
+            if (as_sprite) {
+                defines.AS_SPRITE = true;
+            }
+            return {AS_DISTANCE: true, ...defines};
+        }, this.uniforms, vertexShader, fragmentShader, {});
         this.mesh.material_rgb = this.material_rgb;
         this.mesh.material_normal = this.material;
 
         if (this.model.get("connected")) {
             const geometry = new THREE.BufferGeometry();
 
-            current.merge_to_vec3(["x", "y", "z"], "vertices");
+            next.merge_to_vec3(["x", "y", "z"], "vertices");
             previous.merge_to_vec3(["x", "y", "z"], "vertices");
-            geometry.addAttribute("position", new THREE.BufferAttribute(current.array_vec3.vertices, 3));
+            geometry.addAttribute("position", new THREE.BufferAttribute(next.array_vec3.vertices, 3));
             geometry.addAttribute("position_previous", new THREE.BufferAttribute(previous.array_vec3.vertices, 3));
 
-            current.ensure_array(["color"]);
+            next.ensure_array(["color"]);
             previous.ensure_array(["color"]);
             if (this.model.get("color_scale")) {
-                geometry.addAttribute("color", new THREE.BufferAttribute(current.array.color, 1));
+                geometry.addAttribute("color_next", new THREE.BufferAttribute(next.array.color, 1));
                 geometry.addAttribute("color_previous", new THREE.BufferAttribute(previous.array.color, 1));
             } else {
-                geometry.addAttribute("color", new THREE.BufferAttribute(current.array_vec4.color, 4));
+                geometry.addAttribute("color_next", new THREE.BufferAttribute(next.array_vec4.color, 4));
                 geometry.addAttribute("color_previous", new THREE.BufferAttribute(previous.array_vec4.color, 4));
             }
+            geometry.computeVertexNormals();
 
             this.line_segments = new THREE.Line(geometry, this.line_material);
             this.line_segments.frustumCulled = false;
+            this.line_segments.castShadow = this.model.get("cast_shadow");
+            this.line_segments.receiveShadow = this.model.get("receive_shadow");
         } else {
             this.line_segments = null;
         }
@@ -573,9 +618,9 @@ class ScatterView extends widgets.WidgetView {
                     delete this.previous_values[prop]; // may happen multiple times, that is ok
                 });
             };
-            // uniforms of material_rgb has a reference to these same object
+            // all materials share the same uniforms
             const set = (value) => {
-                this.material.uniforms[property].value = value;
+                this.uniforms[property].value = value;
             };
             this.renderer.transition(set, done, this);
         }
@@ -628,7 +673,9 @@ class ScatterModel extends widgets.WidgetModel {
             connected: false,
             visible: true,
             selected: null,
-            shader_snippets: {size: '\n'}
+            shader_snippets: {size: '\n'},
+            cast_shadow : true,
+            receive_shadow : true,
         };
     }
 }

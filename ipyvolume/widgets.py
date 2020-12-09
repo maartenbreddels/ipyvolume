@@ -78,22 +78,30 @@ class Mesh(widgets.Widget):
     color = Array(default_value="red", allow_none=True).tag(sync=True, **color_serialization)
     visible = traitlets.CBool(default_value=True).tag(sync=True)
 
-    material = traitlets.Instance(
-        pythreejs.ShaderMaterial, help='A :any:`pythreejs.ShaderMaterial` that is used for the mesh'
-    ).tag(sync=True, **widgets.widget_serialization)
+    material =  traitlets.Union([
+            traitlets.Instance(pythreejs.ShaderMaterial),
+            traitlets.Instance(pythreejs.MeshPhysicalMaterial),
+            traitlets.Instance(pythreejs.MeshPhongMaterial),
+            traitlets.Instance(pythreejs.MeshLambertMaterial),
+        ], help='A :any:`pythreejs.Material` that is used for the mesh').tag(sync=True, **widgets.widget_serialization)
 
     @traitlets.default('material')
     def _default_material(self):
         return pythreejs.ShaderMaterial(side=pythreejs.enums.Side.DoubleSide)
 
-    line_material = traitlets.Instance(
-        pythreejs.ShaderMaterial, help='A :any:`pythreejs.ShaderMaterial` that is used for the lines/wireframe'
-    ).tag(sync=True, **widgets.widget_serialization)
+    line_material =  traitlets.Union([
+            traitlets.Instance(pythreejs.ShaderMaterial),
+            traitlets.Instance(pythreejs.MeshPhysicalMaterial),
+            traitlets.Instance(pythreejs.MeshPhongMaterial),
+            traitlets.Instance(pythreejs.MeshLambertMaterial),
+        ], help='A :any:`pythreejs.Material` that is used for the lines/wireframe').tag(sync=True, **widgets.widget_serialization)
 
     @traitlets.default('line_material')
     def _default_line_material(self):
         return pythreejs.ShaderMaterial()
 
+    cast_shadow = traitlets.CBool(default_value=True).tag(sync=True)
+    receive_shadow = traitlets.CBool(default_value=True).tag(sync=True)
 
 @widgets.register
 class Scatter(widgets.Widget):
@@ -147,6 +155,9 @@ class Scatter(widgets.Widget):
     visible = traitlets.CBool(default_value=True).tag(sync=True)
     shader_snippets = traitlets.Dict({'size': '\n'}).tag(sync=True)
 
+    cast_shadow = traitlets.CBool(default_value=True).tag(sync=True)
+    receive_shadow = traitlets.CBool(default_value=True).tag(sync=True)
+
     texture = traitlets.Union(
         [
             traitlets.Instance(ipywebrtc.MediaStream),
@@ -157,17 +168,23 @@ class Scatter(widgets.Widget):
         ]
     ).tag(sync=True, **texture_serialization)
 
-    material = traitlets.Instance(
-        pythreejs.ShaderMaterial, help='A :any:`pythreejs.ShaderMaterial` that is used for the mesh'
-    ).tag(sync=True, **widgets.widget_serialization)
+    material =  traitlets.Union([
+            traitlets.Instance(pythreejs.ShaderMaterial),
+            traitlets.Instance(pythreejs.MeshPhysicalMaterial),
+            traitlets.Instance(pythreejs.MeshPhongMaterial),
+            traitlets.Instance(pythreejs.MeshLambertMaterial),
+        ], help='A :any:`pythreejs.Material` that is used for the mesh').tag(sync=True, **widgets.widget_serialization)
 
     @traitlets.default('material')
     def _default_material(self):
         return pythreejs.ShaderMaterial()
 
-    line_material = traitlets.Instance(
-        pythreejs.ShaderMaterial, help='A :any:`pythreejs.ShaderMaterial` that is used for the lines/wireframe'
-    ).tag(sync=True, **widgets.widget_serialization)
+    line_material =  traitlets.Union([
+            traitlets.Instance(pythreejs.ShaderMaterial),
+            traitlets.Instance(pythreejs.MeshPhysicalMaterial),
+            traitlets.Instance(pythreejs.MeshPhongMaterial),
+            traitlets.Instance(pythreejs.MeshLambertMaterial),
+        ], help='A :any:`pythreejs.Material` that is used for the lines/wireframe').tag(sync=True, **widgets.widget_serialization)
 
     @traitlets.default('line_material')
     def _default_line_material(self):
@@ -265,6 +282,9 @@ class Figure(ipywebrtc.MediaStream):
         sync=True, **widgets.widget_serialization
     )
     volumes = traitlets.List(traitlets.Instance(Volume), [], allow_none=False).tag(
+        sync=True, **widgets.widget_serialization
+    )
+    lights = traitlets.List(traitlets.Instance(pythreejs.Light), [], allow_none=False).tag(
         sync=True, **widgets.widget_serialization
     )
 

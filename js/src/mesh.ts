@@ -2,10 +2,14 @@ import * as widgets from "@jupyter-widgets/base";
 import { isArray, isEqual, isNumber, isString } from "lodash";
 import * as THREE from "three";
 import { FigureView } from "./figure";
-import { createColormap, patchMaterial, scaleTypeMap } from "./scales";
+import { MeshDepthMaterialCustom, MeshDistanceMaterialCustom } from "./materials";
+import { createColormap, patchShader, scaleTypeMap } from "./scales";
 import * as serialize from "./serialize.js";
-import { semver_range } from "./utils";
+import { materialToLightingModel, semver_range } from "./utils";
 import * as values from "./values.js";
+
+const vertexShader = (require("raw-loader!../glsl/mesh-vertex.glsl") as any).default;
+const fragmentShader = (require("raw-loader!../glsl/mesh-fragment.glsl") as any).default;
 
 export
 class MeshView extends widgets.WidgetView {
@@ -28,9 +32,13 @@ class MeshView extends widgets.WidgetView {
     texture_loader: any;
     textures: any;
     texture_video: any;
+
+    lighting_model: any;
+
     render() {
         // console.log("created mesh view, parent is")
         // console.log(this.options.parent)
+
         this.renderer = this.options.parent;
         this.previous_values = {};
         this.attributes_changed = {};
@@ -58,13 +66,17 @@ class MeshView extends widgets.WidgetView {
                 texture: { type: "t", value: null },
                 texture_previous: { type: "t", value: null },
                 colormap: {type: "t", value: null},
-        };
+                ...THREE.UniformsUtils.merge([THREE.UniformsLib["common"], THREE.UniformsLib["lights"]])
+            };
+
         const get_material = (name)  => {
             if (this.model.get(name)) {
                 return this.model.get(name).obj.clone();
             } else {
                 const mat = new THREE.ShaderMaterial();
                 mat.side = THREE.DoubleSide;
+                mat.needsUpdate = true;
+
                 return mat;
             }
 
@@ -82,30 +94,24 @@ class MeshView extends widgets.WidgetView {
         if (this.model.get("material")) {
             this.model.get("material").on("change", () => {
                 this._update_materials();
-                this.renderer.update();
             });
         }
         if (this.model.get("line_material")) {
             this.model.get("line_material").on("change", () => {
                 this._update_materials();
-                this.renderer.update();
             });
         }
 
         this._update_color_scale();
         this.create_mesh();
         this.add_to_scene();
+
         this.model.on("change:color change:sequence_index change:x change:y change:z change:v change:u change:triangles change:lines",
             this.on_change, this);
         this.model.on("change:geo change:connected", this.update_, this);
         this.model.on("change:color_scale", this._update_color_scale, this);
         this.model.on("change:texture", this._load_textures, this);
-        this.model.on("change:visible", this.update_visibility, this);
-    }
-
-    public update_visibility() {
-        this._update_materials();
-        this.renderer.update();
+        this.model.on("change:visible change:lighting_model change:opacity change:material change:cast_shadow change:receive_shadow", this._update_materials, this);
     }
 
     public _load_textures() {
@@ -140,8 +146,7 @@ class MeshView extends widgets.WidgetView {
     set_scales(scales) {
         const new_scale_defines = {};
         for (const key of Object.keys(scales)) {
-            this.material.uniforms[`domain_${key}`].value = scales[key].domain;
-            this.material_rgb.uniforms[`domain_${key}`].value = scales[key].domain;
+            this.uniforms[`domain_${key}`].value = scales[key].domain;
             new_scale_defines[`SCALE_TYPE_${key}`] = scaleTypeMap[scales[key].type];
         }
         if (!isEqual(this.scale_defines, new_scale_defines) ) {
@@ -153,6 +158,14 @@ class MeshView extends widgets.WidgetView {
     add_to_scene() {
         this.meshes.forEach((mesh) => {
             this.renderer.scene_scatter.add(mesh);
+        });
+    }
+
+    update_shadow() {
+        // TODO: we don't have this yet in scatter (inconsistent)
+        this.meshes.forEach((mesh) => {
+            mesh.castShadow = this.model.get("cast_shadow");
+            mesh.receiveShadow = this.model.get("receive_shadow");
         });
     }
 
@@ -192,7 +205,6 @@ class MeshView extends widgets.WidgetView {
                     // console.log("adding size to list of changed attributes")
                     // this.attributes_changed["size"] = []
                 }
-
             }
         }
         this.update_();
@@ -202,7 +214,7 @@ class MeshView extends widgets.WidgetView {
         this.remove_from_scene();
         this.create_mesh();
         this.add_to_scene();
-        this.renderer.update();
+        this._update_materials();
     }
 
     _get_value(value, index, default_value) {
@@ -341,26 +353,35 @@ class MeshView extends widgets.WidgetView {
         if (this.model.get("line_material")) {
             this.line_material_rgb.copy(this.model.get("line_material").obj);
         }
-        this.material.defines = {...this.scale_defines};
-        this.material.defines.USE_COLORMAP = this.model.get("color_scale") !== null;
-        this.material_rgb.defines = {USE_RGB: true, ...this.scale_defines};
-        this.line_material.defines = {AS_LINE: true, ...this.scale_defines};
-        this.line_material_rgb.defines = {AS_LINE: true, USE_RGB: true, ...this.scale_defines};
+        this.lighting_model = materialToLightingModel(this.material);
+        // update material defines in order to run correct shader code
+        this.material.defines = {USE_COLOR: true,  USE_COLORMAP: this.model.get("color_scale") !== null, ...this.scale_defines};
+        this.material.defines[`AS_${this.lighting_model}`] = true;
         this.material.extensions = {derivatives: true};
+        this.material_rgb.defines = {AS_COORDINATE: true, USE_COLOR: true, ...this.scale_defines};
+        this.line_material.defines = {IS_LINE: true, ...this.scale_defines};
+        this.line_material.defines[`AS_${this.lighting_model}`] = true;
+        this.line_material_rgb.defines = {IS_LINE: true, AS_COORDINATE: true, USE_COLOR: true, ...this.scale_defines};
+
         // locally and the visible with this object's visible trait
         this.material.visible = this.material.visible && this.model.get("visible");
         this.material_rgb.visible = this.material.visible && this.model.get("visible");
         this.line_material.visible = this.line_material.visible && this.model.get("visible");
         this.line_material_rgb.visible = this.line_material.visible && this.model.get("visible");
+
         this.materials.forEach((material) => {
-            material.vertexShader = (require("raw-loader!../glsl/mesh-vertex.glsl") as any).default;
-            material.fragmentShader = (require("raw-loader!../glsl/mesh-fragment.glsl") as any).default;
-            material.uniforms = this.uniforms;
-            material.depthWrite = true;
-            material.transparant = true;
-            material.depthTest = true;
-            patchMaterial(material);
+            material.onBeforeCompile = (shader) => {
+                shader.vertexShader = vertexShader;
+                shader.fragmentShader = fragmentShader;
+                shader.uniforms = {...shader.uniforms, ...this.uniforms};
+                patchShader(shader);
+            };
+            material.needsUpdate = true;
+            material.lights = true;
         });
+
+        this.update_shadow();
+
         const texture = this.model.get("texture");
         if (texture && this.textures) {
             this.material.defines.USE_TEXTURE = true;
@@ -369,6 +390,8 @@ class MeshView extends widgets.WidgetView {
         this.material_rgb.needsUpdate = true;
         this.line_material.needsUpdate = true;
         this.line_material_rgb.needsUpdate = true;
+
+        this.renderer.update();
     }
 
     create_mesh() {
@@ -480,10 +503,11 @@ class MeshView extends widgets.WidgetView {
             geometry.addAttribute("position", new THREE.BufferAttribute(current.array_vec3.vertices, 3));
             geometry.addAttribute("position_previous", new THREE.BufferAttribute(previous.array_vec3.vertices, 3));
             if (this.model.get("color_scale")) {
-                geometry.addAttribute("color", new THREE.BufferAttribute(current.array.color, 1));
+                // TODO: similar as in scatter, we should use previous and next
+                geometry.addAttribute("color_current", new THREE.BufferAttribute(current.array.color, 1));
                 geometry.addAttribute("color_previous", new THREE.BufferAttribute(previous.array.color, 1));
             } else {
-                geometry.addAttribute("color", new THREE.BufferAttribute(current.array_vec4.color, 4));
+                geometry.addAttribute("color_current", new THREE.BufferAttribute(current.array_vec4.color, 4));
                 geometry.addAttribute("color_previous", new THREE.BufferAttribute(previous.array_vec4.color, 4));
             }
             geometry.setIndex(new THREE.BufferAttribute(triangles, 1));
@@ -502,13 +526,32 @@ class MeshView extends widgets.WidgetView {
                 geometry.addAttribute("u_previous", new THREE.BufferAttribute(u_previous, 1));
                 geometry.addAttribute("v_previous", new THREE.BufferAttribute(v_previous, 1));
             }
+            geometry.computeVertexNormals();
 
             this.surface_mesh = new THREE.Mesh(geometry, this.material);
+            this.surface_mesh.customDepthMaterial = new MeshDepthMaterialCustom(() => {
+                const defines = {...this.material.defines};
+                // unset lighting model
+                delete defines[`AS_${this.lighting_model}`];
+                return {AS_DEPTH: true, ...defines};
+            }, this.uniforms, vertexShader, fragmentShader, {
+                depthPacking: THREE.RGBADepthPacking,
+                alphaTest: 0.5,
+            });
+            this.surface_mesh.customDistanceMaterial = new MeshDistanceMaterialCustom(() => {
+                const defines = {...this.material.defines};
+                // unset lighting model
+                delete defines[`AS_${this.lighting_model}`];
+                return {AS_DISTANCE: true, ...defines};
+            }, this.uniforms, vertexShader, fragmentShader,  {});
             // BUG? because of our custom shader threejs thinks our object if out
             // of the frustum
             this.surface_mesh.frustumCulled = false;
             this.surface_mesh.material_rgb = this.material_rgb;
             this.surface_mesh.material_normal = this.material;
+            this.surface_mesh.castShadow = this.model.get("cast_shadow");
+            this.surface_mesh.receiveShadow = this.model.get("receive_shadow");
+
             this.meshes.push(this.surface_mesh);
         }
 
@@ -528,7 +571,7 @@ class MeshView extends widgets.WidgetView {
                 color_previous = new THREE.BufferAttribute(previous.array_vec4.color, 4);
             }
             color.normalized = true;
-            geometry.addAttribute("color", color);
+            geometry.addAttribute("color_current", color);
             color_previous.normalized = true;
             geometry.addAttribute("color_previous", color_previous);
             const indices = new Uint32Array(lines[0]);
@@ -543,6 +586,7 @@ class MeshView extends widgets.WidgetView {
         } else {
             this.line_segments = null;
         }
+        this.update_shadow();
 
         for (const key of Object.keys(this.attributes_changed)) {
             const changed_properties = this.attributes_changed[key];
@@ -556,7 +600,7 @@ class MeshView extends widgets.WidgetView {
             // uniforms of material_rgb has a reference to these same object
             // this.renderer.transition(this.material.uniforms[property], "value", done, this)
             this.renderer.transition((value) => {
-                this.material.uniforms[property].value = time_offset + time_delta * value;
+                this.uniforms[property].value = time_offset + time_delta * value;
             }, done, this);
         }
         this.attributes_changed = {};
@@ -588,7 +632,7 @@ class MeshModel extends widgets.WidgetModel {
             _model_module : "ipyvolume",
             _view_module : "ipyvolume",
             _model_module_version: semver_range,
-                _view_module_version: semver_range,
+            _view_module_version: semver_range,
             color: "red",
             color_scale: null,
             sequence_index: 0,
@@ -596,6 +640,8 @@ class MeshModel extends widgets.WidgetModel {
             visible: true,
             visible_lines: true,
             visible_faces: true,
+            cast_shadow : true,
+            receive_shadow : true,
         };
     }
 }

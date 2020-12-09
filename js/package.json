@@ -63,7 +63,7 @@
     "webpack-cli": "^3.2.3"
   },
   "dependencies": {
-    "@jupyter-widgets/base": "^1 || ^2 || ^3 || ^4",
+    "@jupyter-widgets/base": "^1 || ^2.0.2 || ^3 || ^4",
     "@jupyter-widgets/controls": "^1 || ^2",
     "@jupyterlab/application": "^2.1.0",
     "css-loader": "^0.28.4",

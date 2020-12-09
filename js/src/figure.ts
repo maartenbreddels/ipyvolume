@@ -105,6 +105,7 @@ class FigureModel extends widgets.DOMWidgetModel {
     static serializers = {...widgets.DOMWidgetModel.serializers,
         scatters: { deserialize: widgets.unpack_models },
         meshes: { deserialize: widgets.unpack_models },
+        lights: { deserialize: widgets.unpack_models },
         volumes: { deserialize: widgets.unpack_models },
         camera: { deserialize: widgets.unpack_models },
         scene: { deserialize: widgets.unpack_models },
@@ -134,6 +135,7 @@ class FigureModel extends widgets.DOMWidgetModel {
             displayscale: 1,
             scatters: null,
             meshes: null,
+            lights: null,
             volumes: null,
             show: "Volume",
             scales: {},
@@ -210,6 +212,7 @@ class FigureView extends widgets.DOMWidgetView {
     mesh_views: { [key: string]: MeshView };
     scatter_views: { [key: string]: ScatterView };
     volume_views: { [key: string]: VolumeView };
+    lights: { [key: string]: THREE.Light };
     volume_back_target: THREE.WebGLRenderTarget;
     geometry_depth_target: THREE.WebGLRenderTarget;
     color_pass_target: THREE.WebGLRenderTarget;
@@ -908,6 +911,8 @@ class FigureView extends widgets.DOMWidgetView {
         this.update_meshes();
         this.model.on("change:volumes", this.update_volumes, this);
         this.update_volumes();
+        this.model.on("change:lights", this.update_lights, this);
+        this.update_lights();
 
         this.update_size();
 
@@ -1614,6 +1619,68 @@ class FigureView extends widgets.DOMWidgetView {
         } else {
             this.volume_views = {};
         }
+    }
+
+    async update_lights() {
+
+        // Initialize lights if this is the first pass
+        if (!this.lights) {
+            this.lights = {}
+        }
+
+        const lights = this.model.get("lights");
+        if (lights.length !== 0) { // So now check if list has length 0
+            // Change mesh lighting model
+            const current_light_cids = [];
+            lights.forEach(async (light_model) => {
+                if (!(light_model.cid in this.lights)) {
+                    const light = light_model.obj;
+                    if (light.castShadow) {
+                        this.update_shadows();
+                    }
+
+                    const on_light_change = () => {
+                        if (light.castShadow) {
+                            this.update_shadows();
+                        }
+
+                        this.update();
+                    }
+
+                    light_model.on("change", on_light_change);
+                    light_model.on("childchange", on_light_change);
+
+                    this.lights[light_model.cid] = light;
+
+                    if (light.target) {
+                        this.scene_scatter.add(light.target);
+                    }
+                    this.scene_scatter.add(light);
+                }
+
+                // Do not delete current lights
+                current_light_cids.push(light_model.cid);
+            });
+
+            // Remove previous lights
+            for (const cid of Object.keys(this.lights)) {
+                const light = this.lights[cid];
+
+                if (current_light_cids.indexOf(cid) === -1) {
+                    this.scene_scatter.remove(light);
+                    delete this.lights[cid];
+                }
+            }
+
+            this.update();
+        }
+    }
+
+    update_shadows() {
+        // Activate shadow mapping
+        this.renderer.shadowMap.enabled = true
+        this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        // TODO: when do we disable shadow mapping?
     }
 
     transition(f, on_done, context) {
