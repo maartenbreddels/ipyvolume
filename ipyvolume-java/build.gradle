@@ -1,0 +1,19 @@
+group 'ipyvolume-java'
+version '1.0-SNAPSHOT'
+
+apply plugin: 'java'
+
+sourceCompatibility = 1.8
+
+repositories {
+    allprojects {
+        repositories {
+            mavenCentral()
+            maven { url 'https://jitpack.io' }
+        }
+    }
+}
+
+dependencies {
+    compile 'com.github.twosigma.beakerx:beaker-kernel-base:0.15.2'
+}
