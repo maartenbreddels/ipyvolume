@@ -9,7 +9,7 @@ All function accept `show` and `draw` arguments
 
 import warnings
 import numpy as np
-from numpy import cos, sin, pi
+from numpy import cos, sin, pi, linspace, meshgrid
 
 try:
     import scipy.ndimage
@@ -284,3 +284,31 @@ def gaussian(N=1000, draw=True, show=True, seed=42, color=None, marker='sphere')
         return mesh
     else:
         return x, y, z
+
+
+def moebius(draw=True, show=True, num=40, endpoint=True,
+           uv=True, wireframe=False, texture=None):
+    """Show Möbius strip."""
+    # http://paulbourke.net/geometry/toroidal
+
+    import ipyvolume.pylab as p3
+    u = linspace(0, 2 * pi, num=num, endpoint=endpoint)
+    v = linspace(-0.4, 0.4, num=num, endpoint=endpoint)
+    u, v = meshgrid(u, v)
+    x = cos(u) + v * cos(u / 2) * cos(u)
+    y = sin(u) + v * cos(u / 2) * sin(u)
+    z = v * sin(u / 2)
+    if draw:
+        if texture:
+            uv = True
+        kwargs = dict(wrapx=not endpoint, wrapy=not endpoint,
+                      wireframe=wireframe, texture=texture)
+        if uv:
+            kwargs.update(dict(u=u/(2*pi), v=v/(2*pi)))
+        mesh = p3.plot_mesh(x, y, z, **kwargs)
+        if show:
+            p3.squarelim()
+            p3.show()
+        return mesh
+    else:
+        return x, y, z, u, v
