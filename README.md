@@ -38,8 +38,17 @@ Documentation is generated at readthedocs: [![Documentation](https://readthedocs
 # Screencast demos
 
 ## Animation
+```python
+import ipyvolume as ipv
+ds_stream = ipv.datasets.animated_stream.fetch()
 
-![screencast](https://cloud.githubusercontent.com/assets/1765949/23901444/8d4f26f8-08bd-11e7-81e6-cedad0a8471c.gif)
+fig = ipv.figure()
+ipv.style.use('dark')
+q = ipv.quiver(*ds_stream.data, size=6)
+ipv.animation_control(q, interval=200)
+ipv.show()
+```
+![Animation of ds_stream.data](https://user-images.githubusercontent.com/30920819/46180725-4eda9200-c305-11e8-9d09-4eecae487502.gif)
 
 (see more at [the documentation](https://ipyvolume.readthedocs.io/en/latest/animation.html))
 
