@@ -85,7 +85,7 @@ $ jupyter labextension install jupyter-threejs
 If you are still using an old notebook version, ipyvolume and its dependend extension (widgetsnbextension) need to be enabled manually. If unsure, check which extensions are enabled:
 
 ```
-$ jupyter nbextention list
+$ jupyter nbextension list
 ```
 
 If not enabled, enable them:
